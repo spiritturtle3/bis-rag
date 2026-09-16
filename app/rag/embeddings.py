@@ -1,7 +1,7 @@
 from fastembed import TextEmbedding
 
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 
 class EmbeddingModel:
