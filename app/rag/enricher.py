@@ -1,44 +1,29 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from app.database.standard_repository import get_standard
 
 
 def _build_status_summary(standard: dict) -> dict:
-    """
-    Build a concise procurement-focused status summary.
-    """
-
     edition = standard.get("currentEdition") or {}
     amendments = standard.get("amendments") or []
     compliance = standard.get("compliance") or {}
     procurement = standard.get("procurementRelevance") or {}
 
-    latest_amendment = None
-
-    if amendments:
-        latest_amendment = amendments[-1]
+    latest_amendment = amendments[-1] if amendments else None
 
     return {
         "currentEdition": {
             "edition": edition.get("edition"),
             "year": edition.get("year"),
-            "publishedDate": edition.get(
-                "publishedDate"
-            ),
+            "publishedDate": edition.get("publishedDate"),
             "status": edition.get("status"),
         },
         "latestAmendment": latest_amendment,
         "certification": {
-            "required": compliance.get(
-                "certificationRequired"
-            ),
-            "scheme": compliance.get(
-                "certificationScheme"
-            ),
-            "mandatory": compliance.get(
-                "mandatory"
-            ),
-            "crsApplicable": compliance.get(
-                "crsApplicability"
-            ),
+            "required": compliance.get("certificationRequired"),
+            "scheme": compliance.get("certificationScheme"),
+            "mandatory": compliance.get("mandatory"),
+            "crsApplicable": compliance.get("crsApplicability"),
             "hallmarkingApplicable": compliance.get(
                 "hallmarkingApplicability"
             ),
@@ -48,163 +33,121 @@ def _build_status_summary(standard: dict) -> dict:
                 "applicableToProcurement"
             ),
             "recommendedFor": procurement.get(
-                "recommendedFor",
-                [],
+                "recommendedFor", []
             ),
             "specificationPoints": procurement.get(
-                "specificationPoints",
-                [],
+                "specificationPoints", []
             ),
             "buyerConsiderations": procurement.get(
-                "buyerConsiderations",
-                [],
+                "buyerConsiderations", []
             ),
         },
     }
 
 
-def enrich_recommendation(result: dict) -> dict:
-    """
-    Add full BIS standard metadata to a ranked recommendation
-    while preserving ranking and retrieval evidence.
-    """
-
-    standard_number = result.get(
-        "standardNumber"
-    )
+def enrich_recommendation(
+    result: dict,
+    standard: dict | None = None,
+) -> dict:
+    standard_number = result.get("standardNumber")
 
     if not standard_number:
         return result
 
-    standard = get_standard(
-        standard_number
-    )
+    if standard is None:
+        standard = get_standard(standard_number)
 
     if not standard:
         return result
 
-    enriched = {
-        "standardNumber": standard.get(
-            "standardNumber"
-        ),
+    return {
+        "standardNumber": standard.get("standardNumber"),
         "title": standard.get("title"),
-
-        # Ranking information
         "score": result.get("score"),
-        "rankingScore": result.get(
-            "rankingScore"
-        ),
-        "relevanceScore": result.get(
-            "relevanceScore"
-        ),
-        "confidence": result.get(
-            "confidence"
-        ),
-        "matchedChunks": result.get(
-            "matchedChunks",
-            0,
-        ),
-
-        # Retrieved evidence
-        "bestChunk": result.get(
-            "bestChunk",
-            "",
-        ),
+        "rankingScore": result.get("rankingScore"),
+        "relevanceScore": result.get("relevanceScore"),
+        "confidence": result.get("confidence"),
+        "matchedChunks": result.get("matchedChunks", 0),
+        "bestChunk": result.get("bestChunk", ""),
         "page": result.get("page"),
-        "chunkIndex": result.get(
-            "chunkIndex"
-        ),
+        "chunkIndex": result.get("chunkIndex"),
         "matchedChunkData": result.get(
-            "matchedChunkData",
-            [],
+            "matchedChunkData", []
         ),
-
-        # Core applicability
         "scope": standard.get("scope"),
         "category": standard.get("category"),
         "applicableDomains": standard.get(
-            "applicableDomains",
-            [],
+            "applicableDomains", []
         ),
         "productDetails": standard.get(
-            "productDetails",
-            {},
+            "productDetails", {}
         ),
-        "keywords": standard.get(
-            "keywords",
-            [],
-        ),
-
-        # Technical information
+        "keywords": standard.get("keywords", []),
         "technicalRequirements": standard.get(
-            "technicalRequirements",
-            {},
+            "technicalRequirements", {}
         ),
         "testingAndInspection": standard.get(
-            "testingAndInspection",
-            {},
+            "testingAndInspection", {}
         ),
-
-        # Relationships
         "alliedStandards": standard.get(
-            "alliedStandards",
-            [],
+            "alliedStandards", []
         ),
         "standardRelationships": standard.get(
-            "standardRelationships",
-            [],
+            "standardRelationships", []
         ),
-
-        # Version and compliance
         "currentEdition": standard.get(
             "currentEdition"
         ),
-        "amendments": standard.get(
-            "amendments",
-            [],
-        ),
-        "compliance": standard.get(
-            "compliance",
-            {},
-        ),
-
-        # Procurement
+        "amendments": standard.get("amendments", []),
+        "compliance": standard.get("compliance", {}),
         "procurementRelevance": standard.get(
-            "procurementRelevance",
-            {},
+            "procurementRelevance", {}
         ),
-
-        # Language/source
-        "language": standard.get(
-            "language",
-            "en",
-        ),
+        "language": standard.get("language", "en"),
         "multilingualTerms": standard.get(
-            "multilingualTerms",
-            [],
+            "multilingualTerms", []
         ),
-        "source": standard.get(
-            "source",
-            {},
-        ),
-
-        # Concise procurement summary
+        "source": standard.get("source", {}),
         "statusSummary": _build_status_summary(
             standard
         ),
     }
 
-    return enriched
-
 
 def enrich_recommendations(
     results: list[dict],
 ) -> list[dict]:
-    """
-    Enrich all ranked recommendations with MongoDB metadata.
-    """
+    if not results:
+        return []
+
+    standard_numbers = [
+        result.get("standardNumber")
+        for result in results
+        if result.get("standardNumber")
+    ]
+
+    with ThreadPoolExecutor(
+        max_workers=min(5, len(standard_numbers))
+    ) as executor:
+        standards = list(
+            executor.map(
+                get_standard,
+                standard_numbers,
+            )
+        )
+
+    standard_map = {
+        standard.get("standardNumber"): standard
+        for standard in standards
+        if standard
+    }
 
     return [
-        enrich_recommendation(result)
+        enrich_recommendation(
+            result,
+            standard_map.get(
+                result.get("standardNumber")
+            ),
+        )
         for result in results
     ]

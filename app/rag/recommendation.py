@@ -1,3 +1,5 @@
+import time
+
 from app.database.standard_repository import get_standard
 from app.rag.enricher import enrich_recommendations
 from app.rag.hybrid_search import hybrid_search
@@ -106,43 +108,31 @@ def recommend_standards(
     limit: int = 5,
     relevance_query: str | None = None,
 ) -> list[dict]:
-    """
-    Recommend BIS standards for a natural-language query.
 
-    Flow:
-        User Query
-        ↓
-        Multilingual Translation
-        ↓
-        Hybrid Retrieval
-        ↓
-        Standard-level Ranking
-        ↓
-        Relevance Filtering
-        ↓
-        Confidence Scoring
-        ↓
-        Confidence Filtering
-        ↓
-        Metadata Enrichment
-        ↓
-        Allied/Related Standard Expansion
-        ↓
-        Recommendations
-
-    `relevance_query` can be supplied when the retrieval query is
-    intentionally long, such as a tender document. Retrieval still
-    uses the full query, while relevance filtering uses the focused
-    product-oriented query.
-    """
+    total_start = time.perf_counter()
 
     if not query or not query.strip():
         return []
 
+    # -------------------------
+    # Query translation
+    # -------------------------
+    stage_start = time.perf_counter()
+
     search_query = translate_query(query)
+
+    print(
+        f"TIMING translate_query: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
 
     if not search_query:
         return []
+
+    # -------------------------
+    # Hybrid retrieval
+    # -------------------------
+    stage_start = time.perf_counter()
 
     retrieval_limit = max(
         limit * 3,
@@ -154,8 +144,18 @@ def recommend_standards(
         limit=retrieval_limit,
     )
 
+    print(
+        f"TIMING hybrid_search: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
+
     if not results:
         return []
+
+    # -------------------------
+    # Ranking
+    # -------------------------
+    stage_start = time.perf_counter()
 
     ranked = rank_standards(
         search_query,
@@ -163,10 +163,19 @@ def recommend_standards(
         limit=retrieval_limit,
     )
 
+    print(
+        f"TIMING rank_standards: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
+
     if not ranked:
         return []
 
-    # Add metadata needed by the relevance filter.
+    # -------------------------
+    # Metadata enrichment
+    # -------------------------
+    stage_start = time.perf_counter()
+
     relevance_candidates = []
 
     for result in ranked:
@@ -192,9 +201,16 @@ def recommend_standards(
 
         relevance_candidates.append(enriched)
 
-    # Use a focused relevance query when provided.
-    # This prevents long tender text from diluting
-    # meaningful product-term overlap.
+    print(
+        f"TIMING metadata_enrichment: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
+
+    # -------------------------
+    # Relevance filtering
+    # -------------------------
+    stage_start = time.perf_counter()
+
     relevance_search_query = (
         relevance_query.strip()
         if relevance_query
@@ -202,19 +218,32 @@ def recommend_standards(
         else search_query
     )
 
-    # Remove clearly unrelated standards before confidence scoring.
     relevant = filter_irrelevant(
         relevance_search_query,
         relevance_candidates,
     )
 
+    print(
+        f"TIMING relevance_filter: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
+
     if not relevant:
         return []
 
-    # Calculate confidence after relevance filtering.
+    # -------------------------
+    # Confidence scoring
+    # -------------------------
+    stage_start = time.perf_counter()
+
     scored = add_confidence_scores(
         relevant,
         query=search_query,
+    )
+
+    print(
+        f"TIMING confidence_scoring: "
+        f"{time.perf_counter() - stage_start:.3f}s"
     )
 
     if not has_reliable_match(scored):
@@ -229,12 +258,40 @@ def recommend_standards(
 
     filtered = filtered[:limit]
 
+    # -------------------------
+    # Final enrichment
+    # -------------------------
+    stage_start = time.perf_counter()
+
     enriched = enrich_recommendations(
         filtered
     )
 
+    print(
+        f"TIMING enrich_recommendations: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
+
+    # -------------------------
+    # Relationship expansion
+    # -------------------------
+    stage_start = time.perf_counter()
+
     expanded = _expand_relationships(
         enriched
+    )
+
+    print(
+        f"TIMING relationship_expansion: "
+        f"{time.perf_counter() - stage_start:.3f}s"
+    )
+
+    # -------------------------
+    # Total
+    # -------------------------
+    print(
+        f"TIMING TOTAL recommend_standards: "
+        f"{time.perf_counter() - total_start:.3f}s"
     )
 
     return expanded

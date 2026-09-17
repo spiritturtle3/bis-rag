@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 from dotenv import load_dotenv
@@ -20,44 +21,72 @@ def _build_prompt(
     recommendations: list[dict],
     evidence: list[dict] | None = None,
 ) -> str:
+    compact_recommendations = []
+
+    for item in recommendations:
+        compact_recommendations.append({
+            "standardNumber": item.get("standardNumber"),
+            "title": item.get("title"),
+            "scope": item.get("scope"),
+            "confidence": item.get("confidence"),
+            "currentEdition": item.get("currentEdition"),
+            "amendments": item.get("amendments", []),
+            "compliance": item.get("compliance", {}),
+            "testing": item.get("testingAndInspection", {}),
+            "relatedStandards": item.get("relatedStandards", []),
+        })
+
+    compact_evidence = []
+
+    for item in evidence or []:
+        evidence_items = item.get("evidence", [])
+        evidence_points = item.get("evidencePoints", [])
+
+        if isinstance(evidence_items, list):
+            evidence_items = evidence_items[:2]
+
+        if isinstance(evidence_points, list):
+            evidence_points = evidence_points[:3]
+
+        compact_evidence.append({
+            "standardNumber": item.get("standardNumber"),
+            "title": item.get("title"),
+            "evidencePoints": evidence_points,
+            "evidence": evidence_items,
+        })
+
     payload = {
         "query": query,
-        "recommendations": recommendations,
-        "evidence": evidence or [],
+        "recommendations": compact_recommendations,
+        "evidence": compact_evidence,
     }
 
     return f"""
-You are an expert assistant for Indian Standards and procurement specifications.
+You are an Indian Standards procurement assistant.
 
-Answer the user's procurement query using ONLY the supplied RAG results and evidence.
+Answer using ONLY the supplied RAG data.
 
 Rules:
-- Do not invent Indian Standards.
-- You may mention ONLY standards present in the supplied RAG results.
-- Do not introduce a standard merely because it is related or commonly known.
-- Do not invent clauses, editions, amendments, certifications, or requirements.
-- Clearly distinguish the role of each retrieved standard.
-- "Primary" means the standard directly governing the procured product or its main technical requirements.
-- "Supporting" means a standard that directly supports the primary standard or is needed for an identified aspect of the product specification.
-- "Related/Reference" means a potentially relevant standard that should be reviewed if applicable, but should NOT be presented as a direct requirement for the procured product.
-- Use "Related/Reference" when the retrieved standard is relevant to the surrounding application or infrastructure but does not directly govern the main product.
-- Do not turn every retrieved standard into a Primary or Supporting recommendation.
-- If evidence is insufficient to establish direct applicability, prefer "Related/Reference" or omit the standard.
-- Preserve standard numbers exactly as supplied.
-- Mention certification only when supported by the supplied evidence.
-- Mention amendments when supplied.
-- Give a concise, procurement-focused explanation.
-- Respond in the same language as the user's query when practical.
+- Do not invent standards, clauses, editions, amendments, certifications, or requirements.
+- Mention only standards present in the RAG data.
+- Primary = directly governs the product.
+- Supporting = directly supports the product or primary standard.
+- Related/Reference = potentially relevant but does not directly govern the product.
+- Do not force every retrieved standard into the answer.
+- Mention certification or amendments only when supplied.
+- Preserve IS numbers exactly.
+- Be concise and evidence-grounded.
+- Respond in the user's language when practical.
 - Return valid JSON only.
 
-Required JSON format:
+Required JSON:
 {{
-  "summary": "short summary",
+  "summary": "short procurement-focused summary",
   "recommendations": [
     {{
-      "standardNumber": "exact standard number from RAG",
+      "standardNumber": "exact IS number",
       "applicability": "Primary, Supporting, or Related/Reference",
-      "reason": "evidence-grounded reason"
+      "reason": "short evidence-grounded reason"
     }}
   ],
   "certification": [],
@@ -66,7 +95,7 @@ Required JSON format:
 }}
 
 RAG DATA:
-{json.dumps(payload, ensure_ascii=False, indent=2)}
+{json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}
 """.strip()
 
 
@@ -104,6 +133,10 @@ def generate_with_gemini(
             "GEMINI_API_KEY is not configured"
         )
 
+    start = time.perf_counter()
+
+    print("LLM TIMING: Gemini request started")
+
     try:
         from google import genai
 
@@ -114,9 +147,23 @@ def generate_with_gemini(
             input=prompt,
         )
 
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"LLM TIMING: Gemini request completed: "
+            f"{elapsed:.3f}s"
+        )
+
         return _extract_json(response.output_text)
 
     except Exception as exc:
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"LLM TIMING: Gemini failed after "
+            f"{elapsed:.3f}s: {exc}"
+        )
+
         raise LLMProviderError(
             f"Gemini failed: {exc}"
         ) from exc
@@ -124,7 +171,7 @@ def generate_with_gemini(
 
 def generate_with_groq(
     prompt: str,
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "openai/gpt-oss-120b",
 ) -> dict[str, Any]:
     api_key = os.getenv("GROQ_API_KEY")
 
@@ -132,6 +179,10 @@ def generate_with_groq(
         raise LLMProviderError(
             "GROQ_API_KEY is not configured"
         )
+
+    start = time.perf_counter()
+
+    print("LLM TIMING: Groq request started")
 
     try:
         from groq import Groq
@@ -155,6 +206,14 @@ def generate_with_groq(
                 },
             ],
             temperature=0,
+            max_tokens=300,
+        )
+
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"LLM TIMING: Groq request completed: "
+            f"{elapsed:.3f}s"
         )
 
         return _extract_json(
@@ -162,6 +221,13 @@ def generate_with_groq(
         )
 
     except Exception as exc:
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"LLM TIMING: Groq failed after "
+            f"{elapsed:.3f}s"
+        )
+
         raise LLMProviderError(
             f"Groq failed: {exc}"
         ) from exc
@@ -177,6 +243,10 @@ def generate_with_openrouter(
         raise LLMProviderError(
             "OPENROUTER_API_KEY is not configured"
         )
+
+    start = time.perf_counter()
+
+    print("LLM TIMING: OpenRouter request started")
 
     try:
         from openai import OpenAI
@@ -205,11 +275,25 @@ def generate_with_openrouter(
             temperature=0,
         )
 
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"LLM TIMING: OpenRouter request completed: "
+            f"{elapsed:.3f}s"
+        )
+
         return _extract_json(
             response.choices[0].message.content
         )
 
     except Exception as exc:
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"LLM TIMING: OpenRouter failed after "
+            f"{elapsed:.3f}s"
+        )
+
         raise LLMProviderError(
             f"OpenRouter failed: {exc}"
         ) from exc
@@ -261,35 +345,76 @@ def generate_answer(
     evidence: list[dict] | None = None,
 ) -> dict[str, Any]:
 
+    total_start = time.perf_counter()
+
+    print("LLM TIMING: Building prompt started")
+
+    prompt_start = time.perf_counter()
+
     prompt = _build_prompt(
         query,
         recommendations,
         evidence,
     )
 
+    print(
+        f"LLM TIMING: Prompt building: "
+        f"{time.perf_counter() - prompt_start:.3f}s"
+    )
+
+    print(
+        f"LLM TIMING: Prompt size: "
+        f"{len(prompt)} characters"
+    )
+
     providers = [
-        ("gemini", generate_with_gemini),
         ("groq", generate_with_groq),
+        ("gemini", generate_with_gemini),
         ("openrouter", generate_with_openrouter),
     ]
 
     errors = []
 
     for name, provider in providers:
+
+        provider_start = time.perf_counter()
+
         try:
             result = provider(prompt)
+
+            validation_start = time.perf_counter()
 
             result = validate_llm_answer(
                 result,
                 recommendations,
             )
 
+            print(
+                f"LLM TIMING: {name} validation: "
+                f"{time.perf_counter() - validation_start:.3f}s"
+            )
+
             result["_provider"] = name
+
+            print(
+                f"LLM TIMING: TOTAL generate_answer: "
+                f"{time.perf_counter() - total_start:.3f}s"
+            )
 
             return result
 
         except LLMProviderError as exc:
-            errors.append(f"{name}: {exc}")
+
+            elapsed = time.perf_counter() - provider_start
+
+            print(
+                f"LLM TIMING: {name} total failed: "
+                f"{elapsed:.3f}s"
+            )
+
+            errors.append(
+                f"{name}: {exc}"
+            )
 
     fallback = deterministic_fallback(
         query,
@@ -298,5 +423,10 @@ def generate_answer(
 
     fallback["_provider"] = "deterministic"
     fallback["_errors"] = errors
+
+    print(
+        f"LLM TIMING: TOTAL generate_answer: "
+        f"{time.perf_counter() - total_start:.3f}s"
+    )
 
     return fallback

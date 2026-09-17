@@ -49,27 +49,44 @@ def hybrid_search(query: str, limit: int = 5) -> list[dict]:
     Reciprocal Rank Fusion (RRF).
     """
 
-    vector_results = vector_search(query, limit=limit)
-    keyword_results = keyword_search(query, limit=limit)
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    start = time.perf_counter()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        vector_future = executor.submit(
+            vector_search,
+            query,
+            limit
+        )
+        keyword_future = executor.submit(
+            keyword_search,
+            query,
+            limit
+        )
+
+        vector_results = vector_future.result()
+        keyword_results = keyword_future.result()
+
+    print(
+        f"TIMING parallel retrieval: "
+        f"{time.perf_counter() - start:.3f}s"
+    )
 
     scores = {}
     documents = {}
 
-    # Vector ranking
     for rank, document in enumerate(vector_results, start=1):
         key = str(document["_id"])
-
         documents[key] = document
         scores[key] = scores.get(key, 0) + 1 / (60 + rank)
 
-    # Keyword ranking
     for rank, document in enumerate(keyword_results, start=1):
         key = str(document["_id"])
-
         documents[key] = document
         scores[key] = scores.get(key, 0) + 1 / (60 + rank)
 
-    # Sort by combined RRF score
     ranked = sorted(
         documents,
         key=lambda key: scores[key],
