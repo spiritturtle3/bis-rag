@@ -147,10 +147,114 @@ def normalize_json_candidate(candidate: str) -> str:
 
     return "".join(normalized)
 
+def normalize_record_shape(record: dict) -> dict:
+    """
+    Normalize known dataset schema variations into the BISStandard shape.
+    Keeps the canonical database model unchanged.
+    """
+
+    record = dict(record)
+
+    # alliedStandards:
+    # ["IS 800", "IS 808"]
+    # ->
+    # [{"standardNumber": "IS 800", "relationshipType": "allied"}, ...]
+    allied = record.get("alliedStandards")
+
+    if isinstance(allied, list):
+        normalized_allied = []
+
+        for item in allied:
+            if isinstance(item, str):
+                normalized_allied.append(
+                    {
+                        "standardNumber": item,
+                        "relationshipType": "allied",
+                    }
+                )
+            elif isinstance(item, dict):
+                normalized_allied.append(item)
+
+        record["alliedStandards"] = normalized_allied
+
+    # compliance.notes:
+    # ["note 1", "note 2"]
+    # ->
+    # "note 1; note 2"
+    compliance = record.get("compliance")
+
+    if isinstance(compliance, dict):
+        compliance = dict(compliance)
+        notes = compliance.get("notes")
+
+        if isinstance(notes, list):
+            compliance["notes"] = "; ".join(
+                str(note) for note in notes
+            )
+
+        record["compliance"] = compliance
+
+    # amendments:
+    # ["amendment description"]
+    # ->
+    # [{"description": "amendment description"}]
+    amendments = record.get("amendments")
+
+    if isinstance(amendments, list):
+        normalized_amendments = []
+
+        for item in amendments:
+            if isinstance(item, str):
+                normalized_amendments.append(
+                    {
+                        "description": item,
+                    }
+                )
+            elif isinstance(item, dict):
+                normalized_amendments.append(item)
+
+        record["amendments"] = normalized_amendments
+
+    # standardRelationships:
+    # {"relatedStandard": "...", "relationship": "..."}
+    # ->
+    # canonical field names
+    relationships = record.get("standardRelationships")
+
+    if isinstance(relationships, list):
+        normalized_relationships = []
+
+        for item in relationships:
+            if not isinstance(item, dict):
+                continue
+
+            item = dict(item)
+
+            if "relatedStandardNumber" not in item:
+                item["relatedStandardNumber"] = item.pop(
+                    "relatedStandard",
+                    "",
+                )
+
+            if "relationshipType" not in item:
+                item["relationshipType"] = item.pop(
+                    "relationship",
+                    "related",
+                )
+
+            normalized_relationships.append(item)
+
+        record["standardRelationships"] = normalized_relationships
+
+    return record
 
 def extract_json_objects(text: str) -> tuple[list[dict], list[str]]:
     """
     Extract JSON objects from PDF text.
+
+    Supports both:
+    1. Direct BISStandard records
+    2. Records wrapped inside {"BISStandard": {...}}
     """
 
     text = clean_pdf_artifacts(text)
@@ -166,30 +270,23 @@ def extract_json_objects(text: str) -> tuple[list[dict], list[str]]:
     for index, char in enumerate(text):
 
         if in_string:
-
             if escape:
                 escape = False
-
             elif char == "\\":
                 escape = True
-
             elif char == '"':
                 in_string = False
-
             continue
 
         if char == '"':
             in_string = True
 
         elif char == "{":
-
             if depth == 0:
                 start = index
-
             depth += 1
 
         elif char == "}":
-
             if depth == 0:
                 continue
 
@@ -198,19 +295,33 @@ def extract_json_objects(text: str) -> tuple[list[dict], list[str]]:
             if depth == 0 and start is not None:
 
                 candidate = text[start:index + 1]
-
-                candidate = normalize_json_candidate(
-                    candidate
-                )
+                candidate = normalize_json_candidate(candidate)
 
                 try:
                     parsed = json.loads(candidate)
 
-                    if isinstance(parsed, dict):
+                    if not isinstance(parsed, dict):
+                        start = None
+                        continue
+
+                    # Format 1:
+                    # {"standardNumber": "...", ...}
+                    parsed = normalize_record_shape(parsed)
+
+                    if is_main_standard(parsed):
                         objects.append(parsed)
 
-                except json.JSONDecodeError as exc:
+                    # Format 2:
+                    # {"BISStandard": {"standardNumber": "...", ...}}
+                    elif isinstance(parsed.get("BISStandard"), dict):
+                        wrapped = normalize_record_shape(
+                            parsed["BISStandard"]
+                        )
 
+                        if is_main_standard(wrapped):
+                            objects.append(wrapped)
+
+                except json.JSONDecodeError as exc:
                     failures.append(
                         f"JSON parse error near character "
                         f"{start}: {exc}"

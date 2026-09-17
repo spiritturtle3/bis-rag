@@ -47,6 +47,9 @@ def hybrid_search(query: str, limit: int = 5) -> list[dict]:
     """
     Combine vector and keyword retrieval using
     Reciprocal Rank Fusion (RRF).
+
+    Deduplicate by standardNumber and keep the
+    highest-scoring chunk for each standard.
     """
 
     import time
@@ -54,16 +57,20 @@ def hybrid_search(query: str, limit: int = 5) -> list[dict]:
 
     start = time.perf_counter()
 
+    # Retrieve extra chunks so deduplication does not
+    # reduce the final result set too aggressively.
+    retrieval_limit = max(limit * 3, 10)
+
     with ThreadPoolExecutor(max_workers=2) as executor:
         vector_future = executor.submit(
             vector_search,
             query,
-            limit
+            retrieval_limit
         )
         keyword_future = executor.submit(
             keyword_search,
             query,
-            limit
+            retrieval_limit
         )
 
         vector_results = vector_future.result()
@@ -79,25 +86,43 @@ def hybrid_search(query: str, limit: int = 5) -> list[dict]:
 
     for rank, document in enumerate(vector_results, start=1):
         key = str(document["_id"])
+
+        scores[key] = (
+            scores.get(key, 0)
+            + 1 / (60 + rank)
+        )
+
         documents[key] = document
-        scores[key] = scores.get(key, 0) + 1 / (60 + rank)
 
     for rank, document in enumerate(keyword_results, start=1):
         key = str(document["_id"])
-        documents[key] = document
-        scores[key] = scores.get(key, 0) + 1 / (60 + rank)
 
-    ranked = sorted(
+        scores[key] = (
+            scores.get(key, 0)
+            + 1 / (60 + rank)
+        )
+
+        documents[key] = document
+
+    ranked_chunks = sorted(
         documents,
         key=lambda key: scores[key],
         reverse=True
     )
 
-    results = []
+    # Keep only the strongest chunk for each standard.
+    best_by_standard = {}
 
-    for key in ranked[:limit]:
-        document = documents[key].copy()
-        document["hybridScore"] = scores[key]
-        results.append(document)
+    for key in ranked_chunks:
+        document = documents[key]
+        standard_number = document.get("standardNumber")
 
-    return results
+        if not standard_number:
+            continue
+
+        if standard_number not in best_by_standard:
+            result = document.copy()
+            result["hybridScore"] = scores[key]
+            best_by_standard[standard_number] = result
+
+    return list(best_by_standard.values())[:limit]
