@@ -117,14 +117,10 @@ def _extract_json(text: str) -> dict[str, Any]:
     try:
         result = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise LLMProviderError(
-            "LLM returned invalid JSON"
-        ) from exc
+        raise LLMProviderError("LLM returned invalid JSON") from exc
 
     if not isinstance(result, dict):
-        raise LLMProviderError(
-            "LLM response must be a JSON object"
-        )
+        raise LLMProviderError("LLM response must be a JSON object")
 
     return result
 
@@ -136,12 +132,9 @@ def generate_with_gemini(
     api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
-        raise LLMProviderError(
-            "GEMINI_API_KEY is not configured"
-        )
+        raise LLMProviderError("GEMINI_API_KEY is not configured")
 
     start = time.perf_counter()
-
     print("LLM TIMING: Gemini request started")
 
     try:
@@ -155,7 +148,6 @@ def generate_with_gemini(
         )
 
         elapsed = time.perf_counter() - start
-
         print(
             f"LLM TIMING: Gemini request completed: "
             f"{elapsed:.3f}s"
@@ -165,30 +157,24 @@ def generate_with_gemini(
 
     except Exception as exc:
         elapsed = time.perf_counter() - start
-
         print(
             f"LLM TIMING: Gemini failed after "
             f"{elapsed:.3f}s: {exc}"
         )
 
-        raise LLMProviderError(
-            f"Gemini failed: {exc}"
-        ) from exc
+        raise LLMProviderError(f"Gemini failed: {exc}") from exc
 
 
 def generate_with_groq(
     prompt: str,
-    model: str = "openai/gpt-oss-120b",
+    model: str = "openai/gpt-oss-20b",
 ) -> dict[str, Any]:
     api_key = os.getenv("GROQ_API_KEY")
 
     if not api_key:
-        raise LLMProviderError(
-            "GROQ_API_KEY is not configured"
-        )
+        raise LLMProviderError("GROQ_API_KEY is not configured")
 
     start = time.perf_counter()
-
     print("LLM TIMING: Groq request started")
 
     try:
@@ -202,9 +188,11 @@ def generate_with_groq(
                 {
                     "role": "system",
                     "content": (
-                        "Return valid JSON only. "
-                        "Use only supplied evidence and "
-                        "only standards present in the RAG results."
+                        "Return ONLY valid JSON. "
+                        "Do not use markdown. "
+                        "Do not use code fences. "
+                        "Use only supplied evidence. "
+                        "Mention only standards present in the RAG results."
                     ),
                 },
                 {
@@ -213,7 +201,8 @@ def generate_with_groq(
                 },
             ],
             temperature=0,
-            max_tokens=300,
+            max_tokens=1000,
+            response_format={"type": "json_object"},
         )
 
         elapsed = time.perf_counter() - start
@@ -223,16 +212,28 @@ def generate_with_groq(
             f"{elapsed:.3f}s"
         )
 
-        return _extract_json(
-            response.choices[0].message.content
-        )
+        message = response.choices[0].message
+        content = message.content
+
+        print("LLM DEBUG: Groq message:")
+        print(repr(message))
+
+        print("LLM DEBUG: Groq content:")
+        print(repr(content))
+
+        if not content or not content.strip():
+            raise LLMProviderError(
+                "Groq returned empty content"
+            )
+
+        return _extract_json(content)
 
     except Exception as exc:
         elapsed = time.perf_counter() - start
 
         print(
             f"LLM TIMING: Groq failed after "
-            f"{elapsed:.3f}s"
+            f"{elapsed:.3f}s: {exc}"
         )
 
         raise LLMProviderError(
@@ -252,7 +253,6 @@ def generate_with_openrouter(
         )
 
     start = time.perf_counter()
-
     print("LLM TIMING: OpenRouter request started")
 
     try:
@@ -283,7 +283,6 @@ def generate_with_openrouter(
         )
 
         elapsed = time.perf_counter() - start
-
         print(
             f"LLM TIMING: OpenRouter request completed: "
             f"{elapsed:.3f}s"
@@ -295,10 +294,9 @@ def generate_with_openrouter(
 
     except Exception as exc:
         elapsed = time.perf_counter() - start
-
         print(
             f"LLM TIMING: OpenRouter failed after "
-            f"{elapsed:.3f}s"
+            f"{elapsed:.3f}s: {exc}"
         )
 
         raise LLMProviderError(
