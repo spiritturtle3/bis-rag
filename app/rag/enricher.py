@@ -1,6 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
-
-from app.database.standard_repository import get_standard
+from app.database.standard_repository import get_standards
 
 
 def _build_status_summary(standard: dict) -> dict:
@@ -53,9 +51,6 @@ def enrich_recommendation(
 
     if not standard_number:
         return result
-
-    if standard is None:
-        standard = get_standard(standard_number)
 
     if not standard:
         return result
@@ -126,15 +121,7 @@ def enrich_recommendations(
         if result.get("standardNumber")
     ]
 
-    with ThreadPoolExecutor(
-        max_workers=min(5, len(standard_numbers))
-    ) as executor:
-        standards = list(
-            executor.map(
-                get_standard,
-                standard_numbers,
-            )
-        )
+    standards = get_standards(standard_numbers)
 
     standard_map = {
         standard.get("standardNumber"): standard

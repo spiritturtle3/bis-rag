@@ -13,6 +13,15 @@ def get_standard(standard_number: str):
         {"standardNumber": standard_number}
     )
 
+def get_standards(standard_numbers: list[str]) -> list[dict]:
+    if not standard_numbers:
+        return []
+
+    return list(
+        standards_collection.find(
+            {"standardNumber": {"$in": standard_numbers}}
+        )
+    )
 
 def upsert_standard(standard: dict) -> str:
     result = standards_collection.update_one(

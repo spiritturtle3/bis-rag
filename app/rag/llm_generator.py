@@ -11,6 +11,8 @@ from app.rag.llm_validator import validate_llm_answer
 
 load_dotenv()
 
+LLM_TIMEOUT = 3.0
+
 
 class LLMProviderError(Exception):
     pass
@@ -107,11 +109,14 @@ RAG DATA:
 
 
 def _extract_json(text: str) -> dict[str, Any]:
+    if not text:
+        raise LLMProviderError("LLM returned empty content")
+
     text = text.strip()
 
-    if text.startswith("`"):
-        text = text.replace("`json", "", 1)
-        text = text.replace("`", "")
+    if text.startswith("```"):
+        text = text.replace("```json", "", 1)
+        text = text.replace("```", "")
         text = text.strip()
 
     try:
@@ -123,46 +128,6 @@ def _extract_json(text: str) -> dict[str, Any]:
         raise LLMProviderError("LLM response must be a JSON object")
 
     return result
-
-
-def generate_with_gemini(
-    prompt: str,
-    model: str = "gemini-3.6-flash",
-) -> dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    if not api_key:
-        raise LLMProviderError("GEMINI_API_KEY is not configured")
-
-    start = time.perf_counter()
-    print("LLM TIMING: Gemini request started")
-
-    try:
-        from google import genai
-
-        client = genai.Client(api_key=api_key)
-
-        response = client.interactions.create(
-            model=model,
-            input=prompt,
-        )
-
-        elapsed = time.perf_counter() - start
-        print(
-            f"LLM TIMING: Gemini request completed: "
-            f"{elapsed:.3f}s"
-        )
-
-        return _extract_json(response.output_text)
-
-    except Exception as exc:
-        elapsed = time.perf_counter() - start
-        print(
-            f"LLM TIMING: Gemini failed after "
-            f"{elapsed:.3f}s: {exc}"
-        )
-
-        raise LLMProviderError(f"Gemini failed: {exc}") from exc
 
 
 def generate_with_groq(
@@ -180,7 +145,11 @@ def generate_with_groq(
     try:
         from groq import Groq
 
-        client = Groq(api_key=api_key)
+        client = Groq(
+            api_key=api_key,
+            timeout=LLM_TIMEOUT,
+            max_retries=0,
+        )
 
         response = client.chat.completions.create(
             model=model,
@@ -212,14 +181,7 @@ def generate_with_groq(
             f"{elapsed:.3f}s"
         )
 
-        message = response.choices[0].message
-        content = message.content
-
-        print("LLM DEBUG: Groq message:")
-        print(repr(message))
-
-        print("LLM DEBUG: Groq content:")
-        print(repr(content))
+        content = response.choices[0].message.content
 
         if not content or not content.strip():
             raise LLMProviderError(
@@ -239,6 +201,63 @@ def generate_with_groq(
         raise LLMProviderError(
             f"Groq failed: {exc}"
         ) from exc
+
+
+def generate_with_mistral(prompt: str) -> str:
+    import os
+    import time
+    from openai import OpenAI
+
+    api_key = os.getenv("MISTRAL_API_KEY")
+
+    if not api_key:
+        raise LLMProviderError("MISTRAL_API_KEY is not configured")
+
+    start = time.perf_counter()
+    print("LLM TIMING: Mistral request started")
+
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.mistral.ai/v1",
+            timeout=3.0,
+            max_retries=0,
+        )
+
+        response = client.chat.completions.create(
+            model="mistral-small-latest",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Return valid JSON only. "
+                        "Do not include markdown or code fences."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            temperature=0.1,
+            max_tokens=1000,
+            response_format={"type": "json_object"},
+        )
+
+        elapsed = time.perf_counter() - start
+        print(f"LLM TIMING: Mistral request completed: {elapsed:.3f}s")
+
+        content = response.choices[0].message.content
+
+        if not content:
+            raise LLMProviderError("Mistral returned empty content")
+
+        return content
+
+    except Exception as exc:
+        elapsed = time.perf_counter() - start
+        print(f"LLM TIMING: Mistral failed after {elapsed:.3f}s: {exc}")
+        raise LLMProviderError(f"Mistral failed: {exc}") from exc
 
 
 def generate_with_openrouter(
@@ -261,6 +280,8 @@ def generate_with_openrouter(
         client = OpenAI(
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
+            timeout=LLM_TIMEOUT,
+            max_retries=0,
         )
 
         response = client.chat.completions.create(
@@ -269,9 +290,11 @@ def generate_with_openrouter(
                 {
                     "role": "system",
                     "content": (
-                        "Return valid JSON only. "
-                        "Use only supplied evidence and "
-                        "only standards present in the RAG results."
+                        "Return ONLY valid JSON. "
+                        "Do not use markdown. "
+                        "Do not use code fences. "
+                        "Use only supplied evidence. "
+                        "Mention only standards present in the RAG results."
                     ),
                 },
                 {
@@ -280,20 +303,29 @@ def generate_with_openrouter(
                 },
             ],
             temperature=0,
+            max_tokens=1000,
+            response_format={"type": "json_object"},
         )
 
         elapsed = time.perf_counter() - start
+
         print(
             f"LLM TIMING: OpenRouter request completed: "
             f"{elapsed:.3f}s"
         )
 
-        return _extract_json(
-            response.choices[0].message.content
-        )
+        content = response.choices[0].message.content
+
+        if not content or not content.strip():
+            raise LLMProviderError(
+                "OpenRouter returned empty content"
+            )
+
+        return _extract_json(content)
 
     except Exception as exc:
         elapsed = time.perf_counter() - start
+
         print(
             f"LLM TIMING: OpenRouter failed after "
             f"{elapsed:.3f}s: {exc}"
@@ -311,22 +343,20 @@ def deterministic_fallback(
     output = []
 
     for recommendation in recommendations:
-        output.append(
-            {
-                "standardNumber": recommendation.get(
-                    "standardNumber",
-                    "",
+        output.append({
+            "standardNumber": recommendation.get(
+                "standardNumber",
+                "",
+            ),
+            "applicability": "Supporting",
+            "reason": recommendation.get(
+                "scope",
+                recommendation.get(
+                    "bestChunk",
+                    "Retrieved as a relevant standard.",
                 ),
-                "applicability": "Supporting",
-                "reason": recommendation.get(
-                    "scope",
-                    recommendation.get(
-                        "bestChunk",
-                        "Retrieved as a relevant standard.",
-                    ),
-                ),
-            }
-        )
+            ),
+        })
 
     return {
         "summary": (
@@ -349,7 +379,6 @@ def generate_answer(
     recommendations: list[dict],
     evidence: list[dict] | None = None,
 ) -> dict[str, Any]:
-
     total_start = time.perf_counter()
 
     print("LLM TIMING: Building prompt started")
@@ -374,14 +403,13 @@ def generate_answer(
 
     providers = [
         ("groq", generate_with_groq),
-        ("gemini", generate_with_gemini),
+        ("mistral", generate_with_mistral),
         ("openrouter", generate_with_openrouter),
     ]
 
     errors = []
 
     for name, provider in providers:
-
         provider_start = time.perf_counter()
 
         try:
@@ -409,7 +437,6 @@ def generate_answer(
             return result
 
         except LLMProviderError as exc:
-
             elapsed = time.perf_counter() - provider_start
 
             print(

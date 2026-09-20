@@ -6,6 +6,5 @@ python-multipart==0.0.32
 pymupdf==1.28.2
 pydantic==2.13.5
 fastembed
-google-genai==2.23.0
 groq==1.7.0
 openai==3.14.0
